@@ -189,30 +189,30 @@ def load_existing_enhanced_people():
 
 def main():
     start_time = time.time()
-    TARGET_COUNT = 120  # Change this number to process more people
+    TARGET_COUNT = 1000  # Change this number to process more people
     
     # Load existing enhanced people
     existing_people = load_existing_enhanced_people()
     
     # Read people from wikidata_people.csv until we have TARGET_COUNT total
-    people_data = []
+    new_people = []
     with open('wikidata_people.csv', 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if len(existing_people) + len(people_data) >= TARGET_COUNT:
+            if len(existing_people) + len(new_people) >= TARGET_COUNT:
                 break
             
             # Skip if already processed
             if row['name'].strip() not in existing_people:
-                people_data.append(row)
+                new_people.append(row)
     
-    if not people_data:
+    if not new_people:
         elapsed_time = time.time() - start_time
         print(f"All {len(existing_people)} people already processed! Target: {TARGET_COUNT}")
         print(f"Total time: {elapsed_time:.2f} seconds")
         return
         
-    print(f"Will process {len(people_data)} new people (existing: {len(existing_people)}, target: {TARGET_COUNT})")
+    print(f"Will process {len(new_people)} new people (existing: {len(existing_people)}, target: {TARGET_COUNT})")
     
     # Step 1: Get Wikipedia and Google data concurrently
     async def fetch_web_data():
@@ -220,15 +220,15 @@ def main():
         timeout = aiohttp.ClientTimeout(total=60)
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            return await get_wikipedia_and_google_data(session, people_data)
+            return await get_wikipedia_and_google_data(session, new_people)
     
     web_data = asyncio.run(fetch_web_data())
     
     print(f"Completed web data fetching. Now generating LLM samples...")
     
     # Step 2: Generate all LLM samples
-    samples, sample_metadata = generate_all_samples(people_data)
-    print(f"Generated {len(samples)} LLM samples for {len(people_data)} people")
+    samples, sample_metadata = generate_all_samples(new_people)
+    print(f"Generated {len(samples)} LLM samples for {len(new_people)} people")
     
     # Step 3: Create and run the Inspect AI task
     task = score_all_people(samples)
@@ -306,10 +306,11 @@ def main():
         fieldnames = ['name', 'page_length', 'google_results', 'political_influence', 
                     'cultural_position', 'number_of_books', 'scientific_pioneer', 
                     'cultural_pioneer', 'sitelinks', 'wikipedia_url', 'wikidata_uri']
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
         writer.writerows(all_data)
     
+    # Done! Wrap up
     elapsed_time = time.time() - start_time
     total_people = len(existing_people) + len(results)
     
@@ -320,5 +321,73 @@ def main():
         print(f"Average time per person: {avg_time_per_person:.2f} seconds")
     print(f"Results saved to enhanced_people.csv")
 
+def patch_zeros():
+    """Patch people with zero page length by refetching Wikipedia data"""
+    print("Starting patch_zeros to fix zero page lengths...")
+    
+    # Load current data
+    people_to_patch = []
+    all_people = []
+    
+    with open('enhanced_people.csv', 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            all_people.append(row)
+            if int(row['page_length']) == 0:
+                people_to_patch.append(row)
+    
+    if not people_to_patch:
+        print("No people with zero page length found!")
+        return
+    
+    print(f"Found {len(people_to_patch)} people with zero page length")
+    
+    # Fetch Wikipedia data for these people using existing function
+    async def fetch_wikipedia_data():
+        connector = aiohttp.TCPConnector(limit=10)
+        timeout = aiohttp.ClientTimeout(total=30)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            # Reuse existing get_wikipedia_and_google_data but only extract page lengths
+            patch_data = [{'name': p['name'], 'wikipedia': p['wikipedia_url']} for p in people_to_patch]
+            web_results = await get_wikipedia_and_google_data(session, patch_data)
+            
+            # Extract just the page lengths
+            results = {}
+            for name, data in web_results.items():
+                results[name] = data['page_length']
+                print(f"Fetched {name}: {data['page_length']} characters")
+            
+            return results
+    
+    # Get the new page lengths
+    new_page_lengths = asyncio.run(fetch_wikipedia_data())
+    
+    # Update the data
+    updated_count = 0
+    for person in all_people:
+        name = person['name']
+        if name in new_page_lengths and new_page_lengths[name] > 0:
+            old_length = person['page_length']
+            person['page_length'] = str(new_page_lengths[name])
+            print(f"Updated {name}: {old_length} -> {new_page_lengths[name]}")
+            updated_count += 1
+    
+    # Save the updated data with proper CSV quoting
+    with open('enhanced_people.csv', 'w', newline='', encoding='utf-8') as f:
+        fieldnames = ['name', 'page_length', 'google_results', 'political_influence', 
+                    'cultural_position', 'number_of_books', 'scientific_pioneer', 
+                    'cultural_pioneer', 'sitelinks', 'wikipedia_url', 'wikidata_uri']
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
+        writer.writeheader()
+        writer.writerows(all_people)
+    
+    print(f"Patch complete! Updated {updated_count} people with new page lengths.")
+    print(f"Remaining zeros: {len(people_to_patch) - updated_count}")
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "patch":
+        patch_zeros()
+    else:
+        main()

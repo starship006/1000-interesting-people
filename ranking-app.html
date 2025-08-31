@@ -147,6 +147,28 @@
     <script>
         let people = [];
 
+        function parseCSVLine(line) {
+            const result = [];
+            let current = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                
+                if (char === '"') {
+                    inQuotes = !inQuotes;
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current);
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            
+            result.push(current); // Add the last field
+            return result;
+        }
+
         async function loadCSV() {
             try {
                 const response = await fetch('enhanced_people.csv');
@@ -164,10 +186,10 @@
 
         function parseCSV(csvData) {
             const lines = csvData.trim().split('\n');
-            const headers = lines[0].split(',');
+            const headers = parseCSVLine(lines[0]);
             
             people = lines.slice(1).map(line => {
-                const values = line.split(',');
+                const values = parseCSVLine(line);
                 return {
                     name: values[0],
                     pageLength: parseInt(values[1]),
@@ -225,6 +247,14 @@
         function displayResults(rankedPeople, formula) {
             const resultsDiv = document.getElementById('results');
             
+            // Calculate sitelinks rankings (Page Rank)
+            const pageRankings = [...rankedPeople]
+                .sort((a, b) => b.sitelinks - a.sitelinks)
+                .reduce((acc, person, index) => {
+                    acc[person.name] = index + 1;
+                    return acc;
+                }, {});
+            
             let html = `
                 <h3>Ranking Results</h3>
                 <p><strong>Formula used:</strong> <code>${formula}</code></p>
@@ -234,6 +264,7 @@
                             <th>Rank</th>
                             <th>Name</th>
                             <th>Score</th>
+                            <th>Page Rank</th>
                             <th>Page Length</th>
                             <th>Google Results</th>
                             <th>Political</th>
@@ -253,6 +284,7 @@
                         <td class="rank-number">#${index + 1}</td>
                         <td><strong><a href="${person.wikipediaUrl}" target="_blank">${person.name}</a></strong></td>
                         <td class="score">${person.score.toFixed(2)}</td>
+                        <td class="rank-number">#${pageRankings[person.name]}</td>
                         <td>${person.pageLength.toLocaleString()}</td>
                         <td>${person.googleResults.toLocaleString()}</td>
                         <td>${person.politicalInfluence}</td>
