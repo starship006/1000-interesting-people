@@ -125,6 +125,7 @@
             
             <button class="btn" onclick="calculateRanking()">Calculate Ranking</button>
             <button class="btn" onclick="loadSampleFormulas()" style="background-color: #2196F3;">Load Sample Formulas</button>
+            <button class="btn" onclick="sortByRankDifference()" style="background-color: #FF9800;">Show Biggest Movers</button>
             
             <div class="variable-help">
                 <strong>Available Variables:</strong>
@@ -146,6 +147,7 @@
 
     <script>
         let people = [];
+        let currentRankedPeople = [];
 
         function parseCSVLine(line) {
             const result = [];
@@ -211,15 +213,42 @@
             const resultsDiv = document.getElementById('results');
             
             try {
-                const rankedPeople = people.map(person => {
+                currentRankedPeople = people.map(person => {
                     const score = evaluateFormula(formula, person);
                     return { ...person, score: score };
                 }).sort((a, b) => b.score - a.score);
 
-                displayResults(rankedPeople, formula);
+                displayResults(currentRankedPeople, formula);
             } catch (error) {
                 resultsDiv.innerHTML = `<div class="error">Error: ${error.message}</div>`;
             }
+        }
+
+        function sortByRankDifference() {
+            if (currentRankedPeople.length === 0) {
+                alert('Please calculate ranking first!');
+                return;
+            }
+
+            const formula = document.getElementById('formulaInput').value;
+            
+            // Calculate page rankings based on sitelinks
+            const pageRankings = [...currentRankedPeople]
+                .sort((a, b) => b.sitelinks - a.sitelinks)
+                .reduce((acc, person, index) => {
+                    acc[person.name] = index + 1;
+                    return acc;
+                }, {});
+            
+            // Add original CodyRank and rankDiff to each person, then sort by rankDiff
+            const sortedByDifference = [...currentRankedPeople].map((person, codyRankIndex) => {
+                const codyRank = codyRankIndex + 1;
+                const pageRank = pageRankings[person.name];
+                const rankDiff = pageRank - codyRank;
+                return { ...person, originalCodyRank: codyRank, rankDiff: rankDiff };
+            }).sort((a, b) => b.rankDiff - a.rankDiff);
+            
+            displayResults(sortedByDifference, formula + ' (sorted by biggest movers)', true);
         }
 
         function evaluateFormula(formula, person) {
@@ -244,7 +273,7 @@
             return Function('Math', '"use strict"; return (' + expression + ')')(Math);
         }
 
-        function displayResults(rankedPeople, formula) {
+        function displayResults(rankedPeople, formula, isRankDiffMode = false) {
             const resultsDiv = document.getElementById('results');
             
             // Calculate sitelinks rankings (Page Rank)
@@ -265,6 +294,7 @@
                             <th>Name</th>
                             <th>Score</th>
                             <th>Page Rank</th>
+                            <th>Rank Diff</th>
                             <th>Page Length</th>
                             <th>Google Results</th>
                             <th>Political</th>
@@ -279,12 +309,29 @@
             `;
             
             rankedPeople.forEach((person, index) => {
+                let codyRank, rankDiff;
+                
+                if (isRankDiffMode && person.originalCodyRank !== undefined) {
+                    // Use the original CodyRank for rank difference calculation
+                    codyRank = person.originalCodyRank;
+                    rankDiff = person.rankDiff;
+                } else {
+                    // Normal mode - calculate everything fresh
+                    codyRank = index + 1;
+                    const pageRank = pageRankings[person.name];
+                    rankDiff = pageRank - codyRank;
+                }
+                
+                const diffStyle = rankDiff > 0 ? 'color: green; font-weight: bold;' : rankDiff < 0 ? 'color: red;' : '';
+                const diffText = rankDiff > 0 ? `+${rankDiff}` : rankDiff.toString();
+                
                 html += `
                     <tr>
                         <td class="rank-number">#${index + 1}</td>
                         <td><strong><a href="${person.wikipediaUrl}" target="_blank">${person.name}</a></strong></td>
                         <td class="score">${person.score.toFixed(2)}</td>
                         <td class="rank-number">#${pageRankings[person.name]}</td>
+                        <td style="${diffStyle}">${diffText}</td>
                         <td>${person.pageLength.toLocaleString()}</td>
                         <td>${person.googleResults.toLocaleString()}</td>
                         <td>${person.politicalInfluence}</td>
