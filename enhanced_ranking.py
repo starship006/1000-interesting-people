@@ -3,13 +3,12 @@ import json
 import time
 import asyncio
 import aiohttp
-from openai import OpenAI
 import os
 from urllib.parse import quote_plus
 import re
-
-# Set your OpenAI API key
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+from inspect_ai import Task, eval, task
+from inspect_ai.dataset import Sample
+from inspect_ai.solver import generate, system_message
 
 async def get_wikipedia_page_length(session, wikipedia_url):
     """Get Wikipedia page length using the API"""
@@ -62,12 +61,27 @@ async def get_google_results_count(session, person_name):
     print(f"Simulated Google results for {person_name}: {simulated_count}")
     return simulated_count
 
-def get_llm_score(wikipedia_url, metric_name, metric_description):
-    """Get LLM score for subjective metrics (0-5 scale)"""
-    try:
-        prompt = f"""Rate the person on the Wikipedia page {wikipedia_url} on a scale of 0-5 for {metric_name}.
+def generate_all_samples(people_data):
+    """Generate all LLM samples for all people and metrics"""
+    samples = []
+    sample_metadata = []
+    
+    metrics = {
+        'political_influence': 'Political influence and power in government, policy-making, or political movements',
+        'cultural_position': 'Cultural significance, impact on arts, entertainment, or social movements',
+        'scientific_pioneer': 'Contributions to scientific discovery, research, or technological advancement',
+        'cultural_pioneer': 'Pioneering work in culture, arts, philosophy, or social change'
+    }
+    
+    for person_data in people_data:
+        name = person_data['name']
+        wikipedia_url = person_data['wikipedia']
+        
+        # Create samples for each metric
+        for metric, description in metrics.items():
+            prompt = f"""Rate the person on the Wikipedia page {wikipedia_url} on a scale of 0-5 for {metric}.
 
-{metric_description}
+{description}
 
 Respond with only a single number from 0-5, where:
 0 = None/Minimal
@@ -79,103 +93,84 @@ Respond with only a single number from 0-5, where:
 
 Person: {wikipedia_url}
 Score:"""
-
-        response = client.chat.completions.create(
-            model="gpt-5-nano",
-            messages=[{"role": "user", "content": prompt}],
-            #max_completion_tokens=5,
-            #temperature=0.1
-        )
-        
-        score_text = response.choices[0].message.content.strip()
-        
-        # Extract number from response
-        print(score_text)
-        score_match = re.search(r'[0-5]', score_text)
-        if score_match:
-            score = int(score_match.group())
-            return score
-        else:
-            print(f"Could not parse score for {wikipedia_url} - {metric_name}: {score_text}")
-            return 0
             
-    except Exception as e:
-        print(f"Error getting LLM score for {wikipedia_url} - {metric_name}: {e}")
-        return 0
-
-async def process_person(session, person_data, openai_semaphore):
-    """Process a single person and get all their scores"""
-    name = person_data['name']
-    wikipedia_url = person_data['wikipedia']
-    
-    print(f"Processing: {name}")
-    
-    # Get Wikipedia page length
-    page_length = await get_wikipedia_page_length(session, wikipedia_url)
-    await asyncio.sleep(0.1)  # Be respectful to Wikipedia
-    
-    # Get Google results count
-    google_results = await get_google_results_count(session, name)
-    # await asyncio.sleep(0.5)  # Rate limiting
-    
-    # Get LLM scores for subjective metrics
-    metrics = {
-        'political_influence': 'Political influence and power in government, policy-making, or political movements',
-        'cultural_position': 'Cultural significance, impact on arts, entertainment, or social movements',
-        'scientific_pioneer': 'Contributions to scientific discovery, research, or technological advancement',
-        'cultural_pioneer': 'Pioneering work in culture, arts, philosophy, or social change'
-    }
-    
-    llm_scores = {}
-    for metric, description in metrics.items():
-        async with openai_semaphore:
-            score = get_llm_score(wikipedia_url, metric, description)
-            llm_scores[metric] = score
-    
-#     # Get number of books (using LLM for now)
-#     books_prompt = f"""How many books has {name} written or been the primary subject of major biographies? 
-    
-# Respond with only a number (estimate if exact count unknown).
-# If it's someone who has written books, count their authored works.
-# If it's someone who hasn't written books, count major biographies about them.
-
-# Person: {name}
-# Number of books:"""
-
-#     try:
-#         books_response = client.chat.completions.create(
-#             model="gpt-5-nano",
-#             messages=[{"role": "user", "content": books_prompt}],
-#             max_tokens=10,
-#             temperature=0.1
-#         )
-#         books_text = books_response.choices[0].message.content.strip()
-#         books_match = re.search(r'\d+', books_text)
-#         number_of_books = int(books_match.group()) if books_match else 0
-#         time.sleep(1)
+            samples.append(Sample(input=prompt, target=""))
+            sample_metadata.append({
+                'person_name': name,
+                'metric': metric,
+                'wikipedia_url': wikipedia_url,
+                'person_data': person_data
+            })
         
-#     except Exception as e:
-#         print(f"Error getting book count for {name}: {e}")
-#         number_of_books = 0
+        # Skip book count for now - just return 0
+    
+    return samples, sample_metadata
 
-    number_of_books = 0
+@task
+def score_all_people(samples) -> Task:
+    """Create task to score all people on all metrics"""
+    return Task(
+        dataset=samples,
+        solver=[
+            system_message("You are an expert evaluator. Respond with only the requested number."),
+            generate()
+        ]
+    )
+
+async def get_wikipedia_and_google_data(session, people_data):
+    """Get Wikipedia page lengths and Google results for all people concurrently"""
+    print(f"Fetching Wikipedia and Google data for {len(people_data)} people...")
     
-    result = {
-        'name': name,
-        'page_length': page_length,
-        'google_results': google_results,
-        'political_influence': llm_scores['political_influence'],
-        'cultural_position': llm_scores['cultural_position'],
-        'number_of_books': number_of_books,
-        'scientific_pioneer': llm_scores['scientific_pioneer'],
-        'cultural_pioneer': llm_scores['cultural_pioneer'],
-        'sitelinks': person_data['sitelinks'],
-        'wikipedia_url': wikipedia_url,
-        'wikidata_uri': person_data['wikidata_uri']
-    }
+    tasks = []
+    for person_data in people_data:
+        name = person_data['name']
+        wikipedia_url = person_data['wikipedia']
+        
+        # Create tasks for each person
+        page_length_task = get_wikipedia_page_length(session, wikipedia_url)
+        google_results_task = get_google_results_count(session, name)
+        
+        tasks.append((name, page_length_task, google_results_task, person_data))
     
-    print(f"Completed: {name} - Page: {page_length}, Google: {google_results}, Books: {number_of_books}")
-    return result
+    # Execute all tasks concurrently
+    results = {}
+    for name, page_task, google_task, person_data in tasks:
+        try:
+            page_length, google_results = await asyncio.gather(
+                page_task, google_task, return_exceptions=True
+            )
+            
+            # Handle exceptions
+            if isinstance(page_length, Exception):
+                page_length = 0
+            if isinstance(google_results, Exception):
+                google_results = 0
+                
+            results[name] = {
+                'page_length': page_length,
+                'google_results': google_results,
+                'person_data': person_data
+            }
+            print(f"Fetched data for: {name}")
+            
+        except Exception as e:
+            print(f"Error fetching data for {name}: {e}")
+            results[name] = {
+                'page_length': 0,
+                'google_results': 0,
+                'person_data': person_data
+            }
+    
+    return results
+
+def extract_number_from_response(response_text: str, range_0_5: bool = True) -> int:
+    """Extract number from LLM response"""
+    if range_0_5:
+        match = re.search(r'[0-5]', response_text)
+        return int(match.group()) if match else 0
+    else:
+        match = re.search(r'\d+', response_text)
+        return int(match.group()) if match else 0
 
 def load_existing_enhanced_people():
     """Load existing enhanced people to avoid reprocessing"""
@@ -192,9 +187,9 @@ def load_existing_enhanced_people():
             print(f"Error reading existing enhanced_people.csv: {e}")
     return existing_people
 
-async def main():
+def main():
     start_time = time.time()
-    TARGET_COUNT = 100  # Change this number to process more people
+    TARGET_COUNT = 120  # Change this number to process more people
     
     # Load existing enhanced people
     existing_people = load_existing_enhanced_people()
@@ -219,69 +214,101 @@ async def main():
         
     print(f"Will process {len(people_data)} new people (existing: {len(existing_people)}, target: {TARGET_COUNT})")
     
-    # Create semaphores for rate limiting
-    http_semaphore = asyncio.Semaphore(50)  # Max 10 concurrent HTTP requests
-    openai_semaphore = asyncio.Semaphore(50)  # Max 5 concurrent OpenAI API calls
+    # Step 1: Get Wikipedia and Google data concurrently
+    async def fetch_web_data():
+        connector = aiohttp.TCPConnector(limit=30)
+        timeout = aiohttp.ClientTimeout(total=60)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            return await get_wikipedia_and_google_data(session, people_data)
     
-    async def process_person_with_semaphore(session, person_data):
-        async with http_semaphore:
-            return await process_person(session, person_data, openai_semaphore)
+    web_data = asyncio.run(fetch_web_data())
     
-    # Process people with async HTTP session
-    connector = aiohttp.TCPConnector(limit=20)
-    timeout = aiohttp.ClientTimeout(total=60)
+    print(f"Completed web data fetching. Now generating LLM samples...")
     
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        # Process all people concurrently with semaphore limits
-        tasks = [process_person_with_semaphore(session, person_data) for person_data in people_data]
+    # Step 2: Generate all LLM samples
+    samples, sample_metadata = generate_all_samples(people_data)
+    print(f"Generated {len(samples)} LLM samples for {len(people_data)} people")
+    
+    # Step 3: Create and run the Inspect AI task
+    task = score_all_people(samples)
+    
+    print("Running Inspect AI evaluation...")
+    eval_result = eval(
+        task,
+        model="openai/gpt-5-nano",  # Use your preferred model
+        log_dir="./inspect_logs",
+        max_connections=20  # Built-in concurrency control
+    )
+
+    if isinstance(eval_result, list):
+        print(f"Got list of {len(eval_result)} results, taking first one")
+        eval_result = eval_result[0]
+    
+
+    print("LLM evaluation completed. Processing results...")
+    
+    # Step 4: Process results and combine with web data
+    results = []
+    person_scores = {}  # Track scores by person
+    
+    # Parse LLM results
+    for i, sample_result in enumerate(eval_result.samples):
+        metadata = sample_metadata[i]
+        person_name = metadata['person_name']
+        metric = metadata['metric']
         
-        results = []
-        completed = 0
+        if person_name not in person_scores:
+            person_scores[person_name] = {}
         
-        # Load existing data first
-        existing_data = []
-        if os.path.exists('enhanced_people.csv'):
-            try:
-                with open('enhanced_people.csv', 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    existing_data = [row for row in reader if row['name']]  # Skip empty rows
-            except Exception as e:
-                print(f"Error reading existing data: {e}")
+        # Extract score from LLM response
+        response_text = sample_result.output.completion if sample_result.output else ""
+        score = extract_number_from_response(response_text, range_0_5=True)
         
-        # Process in batches and save incrementally
-        for coro in asyncio.as_completed(tasks):
-            try:
-                result = await coro
-                results.append(result)
-                completed += 1
-                
-                print(f"Progress: {completed}/{len(people_data)} completed")
-                
-                # Save progress every 10 completions
-                if completed % 10 == 0:
-                    all_data = existing_data + results
-                    with open('enhanced_people.csv', 'w', newline='', encoding='utf-8') as f:
-                        fieldnames = ['name', 'page_length', 'google_results', 'political_influence', 
-                                    'cultural_position', 'number_of_books', 'scientific_pioneer', 
-                                    'cultural_pioneer', 'sitelinks', 'wikipedia_url', 'wikidata_uri']
-                        writer = csv.DictWriter(f, fieldnames=fieldnames)
-                        writer.writeheader()
-                        writer.writerows(all_data)
-                
-            except Exception as e:
-                print(f"Error processing person: {e}")
-                completed += 1
-                continue
-        
-        # Final save with all data
-        all_data = existing_data + results
-        with open('enhanced_people.csv', 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ['name', 'page_length', 'google_results', 'political_influence', 
-                        'cultural_position', 'number_of_books', 'scientific_pioneer', 
-                        'cultural_pioneer', 'sitelinks', 'wikipedia_url', 'wikidata_uri']
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_data)
+        person_scores[person_name][metric] = score
+        print(f"Parsed {person_name} - {metric}: {score}")
+    
+    # Step 5: Combine all data
+    print(f"Step 5: Combining all data")
+    for person_name, scores in person_scores.items():
+        if person_name in web_data:
+            web_info = web_data[person_name]
+            person_data = web_info['person_data']
+            
+            result = {
+                'name': person_name,
+                'page_length': web_info['page_length'],
+                'google_results': web_info['google_results'],
+                'political_influence': scores.get('political_influence', 0),
+                'cultural_position': scores.get('cultural_position', 0),
+                'number_of_books': 0,  # Skip for now
+                'scientific_pioneer': scores.get('scientific_pioneer', 0),
+                'cultural_pioneer': scores.get('cultural_pioneer', 0),
+                'sitelinks': person_data['sitelinks'],
+                'wikipedia_url': person_data['wikipedia'],
+                'wikidata_uri': person_data['wikidata_uri']
+            }
+            results.append(result)
+            print(f"Final result for {person_name}: {result}")
+    
+    # Step 6: Save results
+    existing_data = []
+    if os.path.exists('enhanced_people.csv'):
+        try:
+            with open('enhanced_people.csv', 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                existing_data = [row for row in reader if row['name']]  # Skip empty rows
+        except Exception as e:
+            print(f"Error reading existing data: {e}")
+    
+    all_data = existing_data + results
+    with open('enhanced_people.csv', 'w', newline='', encoding='utf-8') as f:
+        fieldnames = ['name', 'page_length', 'google_results', 'political_influence', 
+                    'cultural_position', 'number_of_books', 'scientific_pioneer', 
+                    'cultural_pioneer', 'sitelinks', 'wikipedia_url', 'wikidata_uri']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(all_data)
     
     elapsed_time = time.time() - start_time
     total_people = len(existing_people) + len(results)
@@ -294,4 +321,4 @@ async def main():
     print(f"Results saved to enhanced_people.csv")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
