@@ -109,6 +109,49 @@
             border-radius: 4px;
             margin-top: 10px;
         }
+        .tooltip {
+            position: relative;
+            cursor: help;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 600px;
+            max-width: 90vw;
+            background-color: #555;
+            color: #fff;
+            text-align: left;
+            border-radius: 6px;
+            padding: 15px;
+            position: fixed;
+            z-index: 1000;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            border: 1px solid #777;
+        }
+        .tooltip .tooltiptext::after {
+            content: "";
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: #555 transparent transparent transparent;
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
@@ -120,8 +163,8 @@
             <input type="text" 
                    class="formula-input" 
                    id="formulaInput" 
-                   placeholder="e.g., pageLength * 0.3 + googleResults / 1000000 + politicalInfluence * 1000"
-                   value="pageLength * 0.3 + googleResults / 1000000 + politicalInfluence * 1000">
+                   placeholder="e.g., pageLength * 0.3 + googleResults / 1000000 + politicalInfluenceGreatMan * 1000"
+                   value="pageLength * 0.3 + googleResults / 1000000 + politicalInfluenceGreatMan * 1000">
             
             <button class="btn" onclick="calculateRanking()">Calculate Ranking</button>
             <button class="btn" onclick="loadSampleFormulas()" style="background-color: #2196F3;">Load Sample Formulas</button>
@@ -148,6 +191,8 @@
     <script>
         let people = [];
         let currentRankedPeople = [];
+        let availableVariables = [];
+        let csvHeaders = [];
 
         function parseCSVLine(line) {
             const result = [];
@@ -158,7 +203,13 @@
                 const char = line[i];
                 
                 if (char === '"') {
-                    inQuotes = !inQuotes;
+                    if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+                        // Handle escaped quotes ("")
+                        current += '"';
+                        i++; // Skip the next quote
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
                 } else if (char === ',' && !inQuotes) {
                     result.push(current);
                     current = '';
@@ -187,25 +238,108 @@
         }
 
         function parseCSV(csvData) {
-            const lines = csvData.trim().split('\n');
-            const headers = parseCSVLine(lines[0]);
+            const rows = parseCSVMultiline(csvData);
+            csvHeaders = rows[0];
             
-            people = lines.slice(1).map(line => {
-                const values = parseCSVLine(line);
-                return {
-                    name: values[0],
-                    pageLength: parseInt(values[1]),
-                    googleResults: parseInt(values[2]),
-                    politicalInfluence: parseFloat(values[3]),
-                    culturalPosition: parseFloat(values[4]),
-                    numberOfBooks: parseInt(values[5]),
-                    scientificPioneer: parseInt(values[6]),
-                    culturalPioneer: parseInt(values[7]),
-                    sitelinks: parseInt(values[8]),
-                    wikipediaUrl: values[9],
-                    wikidataUri: values[10]
-                };
+            // Create camelCase variable names from headers, excluding non-numeric fields and reasoning columns
+            const excludeFields = ['name', 'wikipedia_url', 'wikidata_uri'];
+            availableVariables = csvHeaders
+                .filter(header => !excludeFields.includes(header) && !header.endsWith('_reasoning'))
+                .map(header => toCamelCase(header));
+            
+            updateVariableDisplay();
+            
+            people = rows.slice(1).map(row => {
+                const person = {};
+                
+                // Dynamically map all CSV columns to object properties
+                csvHeaders.forEach((header, index) => {
+                    const camelCaseKey = toCamelCase(header);
+                    const value = row[index] || '';
+                    
+                    if (header === 'name' || header === 'wikipedia_url' || header === 'wikidata_uri' || header.endsWith('_reasoning')) {
+                        person[camelCaseKey] = value;
+                    } else {
+                        // Try to parse as number, fallback to 0
+                        person[camelCaseKey] = parseFloat(value) || 0;
+                    }
+                });
+                
+                return person;
             });
+        }
+        
+        function parseCSVMultiline(csvData) {
+            const result = [];
+            let currentRow = [];
+            let currentField = '';
+            let inQuotes = false;
+            let i = 0;
+            
+            while (i < csvData.length) {
+                const char = csvData[i];
+                
+                if (char === '"') {
+                    if (inQuotes && i + 1 < csvData.length && csvData[i + 1] === '"') {
+                        // Handle escaped quotes ("")
+                        currentField += '"';
+                        i += 2;
+                        continue;
+                    } else {
+                        inQuotes = !inQuotes;
+                        i++;
+                        continue;
+                    }
+                }
+                
+                if (!inQuotes) {
+                    if (char === ',') {
+                        currentRow.push(currentField);
+                        currentField = '';
+                        i++;
+                        continue;
+                    } else if (char === '\n' || char === '\r') {
+                        currentRow.push(currentField);
+                        if (currentRow.length > 0) {
+                            result.push(currentRow);
+                        }
+                        currentRow = [];
+                        currentField = '';
+                        
+                        // Skip \r\n combinations
+                        if (char === '\r' && i + 1 < csvData.length && csvData[i + 1] === '\n') {
+                            i += 2;
+                        } else {
+                            i++;
+                        }
+                        continue;
+                    }
+                }
+                
+                currentField += char;
+                i++;
+            }
+            
+            // Handle last field/row if no trailing newline
+            if (currentField || currentRow.length > 0) {
+                currentRow.push(currentField);
+                if (currentRow.length > 0) {
+                    result.push(currentRow);
+                }
+            }
+            
+            return result;
+        }
+        
+        function toCamelCase(str) {
+            return str.replace(/_([a-z])/g, (match, letter) => letter.toUpperCase());
+        }
+        
+        function updateVariableDisplay() {
+            const variableList = document.querySelector('.variable-list');
+            variableList.innerHTML = availableVariables
+                .map(variable => `<div class="variable-item">${variable}</div>`)
+                .join('');
         }
 
         function calculateRanking() {
@@ -252,21 +386,18 @@
         }
 
         function evaluateFormula(formula, person) {
-            // Replace variable names with actual values
-            let expression = formula
-                .replace(/pageLength/g, person.pageLength)
-                .replace(/googleResults/g, person.googleResults)
-                .replace(/politicalInfluence/g, person.politicalInfluence)
-                .replace(/culturalPosition/g, person.culturalPosition)
-                .replace(/numberOfBooks/g, person.numberOfBooks)
-                .replace(/scientificPioneer/g, person.scientificPioneer)
-                .replace(/culturalPioneer/g, person.culturalPioneer)
-                .replace(/sitelinks/g, person.sitelinks);
+            let expression = formula;
+            
+            // Replace all available variables with their actual values
+            availableVariables.forEach(variable => {
+                const regex = new RegExp(variable, 'g');
+                expression = expression.replace(regex, person[variable] || 0);
+            });
             
             // Basic safety check - allow Math functions
             const cleanExpression = expression.replace(/Math\.[a-zA-Z]+/g, '');
             if (/[a-zA-Z]/.test(cleanExpression)) {
-                throw new Error('Invalid variables in formula');
+                throw new Error('Invalid variables in formula. Available variables: ' + availableVariables.join(', '));
             }
             
             // Evaluate with Math object available
@@ -276,13 +407,21 @@
         function displayResults(rankedPeople, formula, isRankDiffMode = false) {
             const resultsDiv = document.getElementById('results');
             
-            // Calculate sitelinks rankings (Page Rank)
+            // Calculate sitelinks rankings (Page Rank) - use sitelinks if available
+            const sitelinksVar = availableVariables.includes('sitelinks') ? 'sitelinks' : 
+                                 availableVariables[availableVariables.length - 1]; // fallback to last variable
+            
             const pageRankings = [...rankedPeople]
-                .sort((a, b) => b.sitelinks - a.sitelinks)
+                .sort((a, b) => (b[sitelinksVar] || 0) - (a[sitelinksVar] || 0))
                 .reduce((acc, person, index) => {
                     acc[person.name] = index + 1;
                     return acc;
                 }, {});
+            
+            // Generate dynamic table headers
+            const dynamicHeaders = availableVariables
+                .map(variable => `<th>${variable}</th>`)
+                .join('');
             
             let html = `
                 <h3>Ranking Results</h3>
@@ -295,14 +434,7 @@
                             <th>Score</th>
                             <th>Page Rank</th>
                             <th>Rank Diff</th>
-                            <th>Page Length</th>
-                            <th>Google Results</th>
-                            <th>Political</th>
-                            <th>Cultural</th>
-                            <th>Books</th>
-                            <th>Scientific</th>
-                            <th>Pioneer</th>
-                            <th>Sitelinks</th>
+                            ${dynamicHeaders}
                         </tr>
                     </thead>
                     <tbody>
@@ -325,21 +457,32 @@
                 const diffStyle = rankDiff > 0 ? 'color: green; font-weight: bold;' : rankDiff < 0 ? 'color: red;' : '';
                 const diffText = rankDiff > 0 ? `+${rankDiff}` : rankDiff.toString();
                 
+                // Generate dynamic data columns
+                const dynamicData = availableVariables
+                    .map(variable => {
+                        const value = person[variable] || 0;
+                        const reasoningKey = variable + 'Reasoning';
+                        const reasoning = person[reasoningKey];
+                        
+                        if (reasoning && reasoning.trim()) {
+                            // Add tooltip for cells with reasoning
+                            const displayValue = typeof value === 'number' ? value.toLocaleString() : value;
+                            const escapedReasoning = reasoning.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                            return `<td class="tooltip">${displayValue}<span class="tooltiptext">${escapedReasoning}</span></td>`;
+                        } else {
+                            return `<td>${typeof value === 'number' ? value.toLocaleString() : value}</td>`;
+                        }
+                    })
+                    .join('');
+                
                 html += `
                     <tr>
                         <td class="rank-number">#${index + 1}</td>
-                        <td><strong><a href="${person.wikipediaUrl}" target="_blank">${person.name}</a></strong></td>
+                        <td><strong><a href="${person.wikipediaUrl || person.wikipedia_url || '#'}" target="_blank">${person.name}</a></strong></td>
                         <td class="score">${person.score.toFixed(2)}</td>
                         <td class="rank-number">#${pageRankings[person.name]}</td>
                         <td style="${diffStyle}">${diffText}</td>
-                        <td>${person.pageLength.toLocaleString()}</td>
-                        <td>${person.googleResults.toLocaleString()}</td>
-                        <td>${person.politicalInfluence}</td>
-                        <td>${person.culturalPosition}</td>
-                        <td>${person.numberOfBooks}</td>
-                        <td>${person.scientificPioneer}</td>
-                        <td>${person.culturalPioneer}</td>
-                        <td>${person.sitelinks}</td>
+                        ${dynamicData}
                     </tr>
                 `;
             });
@@ -353,13 +496,39 @@
         }
 
         function loadSampleFormulas() {
-            const samples = [
-                "pageLength * 0.3 + googleResults / 1000000 + politicalInfluence * 1000 + sitelinks * 10",
-                "politicalInfluence * 1000 + culturalPosition * 500 + scientificPioneer * 2000",
-                "googleResults / 10000000 + numberOfBooks * 10 + culturalPioneer * 1000",
-                "Math.log(googleResults) * 100 + politicalInfluence * 500 + pageLength / 1000 + sitelinks * 5",
-                "scientificPioneer * 5000 + culturalPioneer * 3000 + numberOfBooks * 5 + sitelinks * 20"
-            ];
+            // Generate dynamic sample formulas based on available variables
+            const samples = [];
+            
+            if (availableVariables.length > 0) {
+                // Basic weighted combination
+                if (availableVariables.includes('pageLength') && availableVariables.includes('googleResults')) {
+                    samples.push(`pageLength * 0.3 + googleResults / 1000000 + ${availableVariables[0]} * 1000`);
+                }
+                
+                // Political comparison if both versions exist
+                if (availableVariables.includes('politicalInfluenceGreatMan') && availableVariables.includes('politicalInfluenceStructuralist')) {
+                    samples.push('politicalInfluenceGreatMan * 1000 + politicalInfluenceStructuralist * 500');
+                    samples.push('(politicalInfluenceGreatMan + politicalInfluenceStructuralist) / 2 * 1000');
+                }
+                
+                // Scientific focus
+                if (availableVariables.includes('scientificPioneer')) {
+                    samples.push(`scientificPioneer * 5000 + ${availableVariables[1] || availableVariables[0]} * 1000`);
+                }
+                
+                // Log-based formula
+                if (availableVariables.includes('googleResults')) {
+                    samples.push(`Math.log(googleResults + 1) * 100 + ${availableVariables[0]} * 500`);
+                }
+                
+                // Simple first variable
+                samples.push(`${availableVariables[0]} * 1000`);
+            }
+            
+            // Fallback if no samples generated
+            if (samples.length === 0) {
+                samples.push(`${availableVariables[0] || 'pageLength'} * 1000`);
+            }
             
             const randomSample = samples[Math.floor(Math.random() * samples.length)];
             document.getElementById('formulaInput').value = randomSample;
