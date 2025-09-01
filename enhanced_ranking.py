@@ -278,7 +278,7 @@ def load_existing_enhanced_people():
 
 def main():
     start_time = time.time()
-    TARGET_COUNT = 400  # Change this number to process more people
+    TARGET_COUNT = 1000  # Change this number to process more people
     
     # Load existing enhanced people
     existing_people = load_existing_enhanced_people()
@@ -386,9 +386,15 @@ def main():
             person_scores[person_name][metric] = round(avg_score, 1)  # Round to 1 decimal place
             print(f"Averaged {person_name} - {metric}: {scores} -> {avg_score:.1f}")
     
-    # Step 5: Combine all data
+    # Step 5: Combine all data - ensure one result per person
     print(f"Step 5: Combining all data")
+    processed_people = set()  # Track processed people to avoid duplicates
+    
     for person_name, scores in person_scores.items():
+        if person_name in processed_people:
+            print(f"Skipping duplicate person: {person_name}") # would happen if Q transform makes multiple copioes
+            continue
+            
         if person_name in web_data:
             web_info = web_data[person_name]
             person_data = web_info['person_data']
@@ -429,6 +435,7 @@ def main():
                 'wikidata_uri': person_data['wikidata_uri']
             }
             results.append(result)
+            processed_people.add(person_name)
             print(f"Final result for {person_name}: {result}")
     
     # Step 6: Save results
@@ -467,6 +474,57 @@ def main():
         avg_time_per_person = elapsed_time / len(results)
         print(f"Average time per person: {avg_time_per_person:.2f} seconds")
     print(f"Results saved to enhanced_people.csv")
+
+def remove_duplicates():
+    """Remove duplicate people from enhanced_people.csv based on name"""
+    print("Starting remove_duplicates to clean up duplicate entries...")
+    
+    if not os.path.exists('enhanced_people.csv'):
+        print("enhanced_people.csv not found!")
+        return
+    
+    # Load all data
+    all_people = []
+    with open('enhanced_people.csv', 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            all_people.append(row)
+    
+    print(f"Found {len(all_people)} total entries")
+    
+    # Remove duplicates, keeping the first occurrence
+    seen_names = set()
+    unique_people = []
+    duplicates_removed = 0
+    
+    for person in all_people:
+        name = person['name'].strip()
+        if name not in seen_names:
+            unique_people.append(person)
+            seen_names.add(name)
+        else:
+            print(f"Removing duplicate: {name}")
+            duplicates_removed += 1
+    
+    print(f"Removed {duplicates_removed} duplicates, keeping {len(unique_people)} unique entries")
+    
+    # Save the deduplicated data
+    with open('enhanced_people.csv', 'w', newline='', encoding='utf-8') as f:
+        fieldnames = ['name', 'page_length', 'google_results', 
+                    'political_influence_great_man', 'political_influence_structuralist',
+                    'political_influence_great_man_reasoning', 'political_influence_structuralist_reasoning',
+                    'scientific_influence', 'scientific_influence_reasoning',
+                    'cultural_influence', 'cultural_influence_reasoning',
+                    'cultural_position', 'cultural_position_reasoning', 
+                    'number_of_books', 
+                    'scientific_pioneer', 'scientific_pioneer_reasoning',
+                    'cultural_pioneer', 'cultural_pioneer_reasoning',
+                    'sitelinks', 'wikipedia_url', 'wikidata_uri']
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_NONNUMERIC)
+        writer.writeheader()
+        writer.writerows(unique_people)
+    
+    print(f"Deduplication complete! Saved {len(unique_people)} unique people to enhanced_people.csv")
 
 def patch_zeros():
     """Patch people with zero page length by refetching Wikipedia data"""
@@ -541,7 +599,12 @@ def patch_zeros():
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "patch":
-        patch_zeros()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "patch":
+            patch_zeros()
+        elif sys.argv[1] == "remove_duplicates":
+            remove_duplicates()
+        else:
+            print("Usage: python enhanced_ranking.py [patch|remove_duplicates]")
     else:
         main()

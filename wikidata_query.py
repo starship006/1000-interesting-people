@@ -8,8 +8,9 @@ import asyncio
 import aiohttp
 
 async def query_wikidata_by_year(session, year):
-    start_date = f"{year}-01-01"
-    end_date = f"{year+1}-01-01"
+    # Format dates properly for BC years (ISO 8601 with leading zeros and sign)
+    start_date = f"{year:+05d}-01-01"
+    end_date = f"{year+1:+05d}-01-01"
     
     sparql_query = f"""
     SELECT ?person ?personLabel ?sitelinks ?birth ?wikipedia WHERE {{
@@ -45,13 +46,54 @@ async def query_wikidata_by_year(session, year):
         print(f"Request error for {year}: {e}")
         return year, None
 
+async def query_wikidata_by_five_years(session, start_year):
+    end_year = start_year + 5
+    # Format dates properly for BC years (ISO 8601 with leading zeros and sign)
+    start_date = f"{start_year:+05d}-01-01"
+    end_date = f"{end_year:+05d}-01-01"
+    
+    sparql_query = f"""
+    SELECT ?person ?personLabel ?sitelinks ?birth ?wikipedia WHERE {{
+      ?person wdt:P31 wd:Q5;
+        wdt:P569 ?birth;
+        wikibase:sitelinks ?sitelinks.
+      OPTIONAL {{
+        ?wikipedia schema:about ?person;
+          schema:isPartOf <https://en.wikipedia.org/>.
+      }}
+      FILTER((?birth >= "{start_date}"^^xsd:dateTime) && (?birth < "{end_date}"^^xsd:dateTime))
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+    }}
+    ORDER BY DESC (?sitelinks)
+    """
+    
+    url = "https://query.wikidata.org/sparql"
+    headers = {
+        "Accept": "application/sparql-results+json",
+        "User-Agent": "Python SPARQL Client"
+    }
+    
+    try:
+        params = {"query": sparql_query}
+        async with session.get(url, params=params, headers=headers, timeout=60) as response:
+            if response.status == 200:
+                data = await response.json()
+                return start_year, data["results"]["bindings"]
+            else:
+                print(f"Error for {start_year}-{end_year-1}: HTTP {response.status}")
+                return start_year, None
+    except Exception as e:
+        print(f"Request error for {start_year}-{end_year-1}: {e}")
+        return start_year, None
+
 async def query_wikidata_by_quarter(session, year, quarter):
     # Define quarter date ranges
+    # Format dates properly for BC years (ISO 8601 with leading zeros and sign)
     quarters = {
-        1: (f"{year}-01-01", f"{year}-04-01"),
-        2: (f"{year}-04-01", f"{year}-07-01"),
-        3: (f"{year}-07-01", f"{year}-10-01"),
-        4: (f"{year}-10-01", f"{year+1}-01-01")
+        1: (f"{year:+05d}-01-01", f"{year:+05d}-04-01"),
+        2: (f"{year:+05d}-04-01", f"{year:+05d}-07-01"),
+        3: (f"{year:+05d}-07-01", f"{year:+05d}-10-01"),
+        4: (f"{year:+05d}-10-01", f"{year+1:+05d}-01-01")
     }
     
     start_date, end_date = quarters[quarter]
@@ -111,6 +153,27 @@ async def query_years(years_to_process, max_concurrent=6):
         
         return results
 
+async def query_five_year_periods(periods_to_process, max_concurrent=4):
+    connector = aiohttp.TCPConnector(limit=max_concurrent)
+    timeout = aiohttp.ClientTimeout(total=120)
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def query_with_semaphore(start_year):
+            async with semaphore:
+                result = await query_wikidata_by_five_years(session, start_year)
+                await asyncio.sleep(0.5)  # Longer delay for five-year queries
+                return result
+        
+        tasks = [query_with_semaphore(start_year) for start_year in periods_to_process]
+        
+        print(f"Starting async queries for {len(periods_to_process)} five-year periods with max {max_concurrent} concurrent requests...")
+        
+        results = await asyncio.gather(*tasks)
+        
+        return results
+
 async def query_quarters(quarters_to_process, max_concurrent=6):
     connector = aiohttp.TCPConnector(limit=max_concurrent)
     timeout = aiohttp.ClientTimeout(total=60)
@@ -142,6 +205,35 @@ def save_to_csv(all_people, filename="wikidata_people.csv"):
         writer.writeheader()
         writer.writerows(all_people)
     print(f"Saved {len(all_people)} people to {filename}")
+
+def process_results_five_years(results, start_year):
+    processed = []
+    for result in results:
+        birth_date = result.get("birth", {}).get("value", "")
+        
+        # Extract actual birth year and calculate quarter from birth date
+        birth_year = start_year  # Default
+        quarter = 1  # Default
+        if birth_date:
+            try:
+                date_parts = birth_date.split('-')
+                birth_year = int(date_parts[0])
+                month = int(date_parts[1])
+                quarter = (month - 1) // 3 + 1
+            except:
+                pass
+        
+        person_data = {
+            'name': result.get("personLabel", {}).get("value", "Unknown"),
+            'birth_date': birth_date,
+            'birth_year': birth_year,
+            'birth_quarter': quarter,
+            'sitelinks': int(result.get("sitelinks", {}).get("value", "0")),
+            'wikipedia': result.get("wikipedia", {}).get("value", ""),
+            'wikidata_uri': result.get("person", {}).get("value", "")
+        }
+        processed.append(person_data)
+    return processed
 
 def process_results_year(results, year):
     processed = []
@@ -239,6 +331,20 @@ def load_existing_data(csv_file):
     
     return all_people, existing_quarters
 
+def get_five_year_periods_to_process(start_year, end_year, existing_years):
+    """Generate list of five-year periods that need to be processed."""
+    all_periods = []
+    current_year = start_year
+    while current_year <= end_year:
+        period_end = min(current_year + 4, end_year)
+        # Check if any year in this period is missing
+        period_years = set(range(current_year, period_end + 1))
+        if not period_years.issubset(existing_years):
+            all_periods.append(current_year)
+        current_year += 5
+    
+    return all_periods
+
 def get_quarters_to_process(start_year, end_year, existing_quarters):
     """Generate list of quarters that need to be processed."""
     all_quarters = []
@@ -289,6 +395,47 @@ async def process_years_with_retry(years_to_process, max_concurrent, max_retries
             time.sleep(5)
     
     return all_new_people, failed_years
+
+async def process_five_year_periods_with_retry(periods_to_process, max_concurrent, max_retries=4):
+    """Process five-year periods with retry logic for failed periods."""
+    all_new_people = []
+    failed_periods = periods_to_process.copy()
+    retry_count = 0
+    
+    while failed_periods and retry_count < max_retries:
+        if retry_count > 0:
+            print(f"\nRetry {retry_count}/{max_retries} for {len(failed_periods)} failed five-year periods...")
+        
+        results = await query_five_year_periods(failed_periods, max_concurrent)
+        
+        # Process results and collect failures
+        current_failures = []
+        period_totals = {}
+        
+        for start_year, period_results in results:
+            if period_results:
+                processed = process_results_five_years(period_results, start_year)
+                all_new_people.extend(processed)
+                period_totals[start_year] = len(processed)
+                print(f"Period {start_year}-{start_year+4}: {len(processed)} people")
+            else:
+                current_failures.append(start_year)
+                print(f"Period {start_year}-{start_year+4}: Failed")
+        
+        # Print period totals for this batch
+        if period_totals:
+            print(f"\nBatch totals:")
+            for start_year in sorted(period_totals.keys()):
+                print(f"  {start_year}-{start_year+4}: {period_totals[start_year]} people")
+        
+        failed_periods = current_failures
+        retry_count += 1
+        
+        if failed_periods and retry_count < max_retries:
+            print(f"Waiting 5 seconds before retry...")
+            time.sleep(5)
+    
+    return all_new_people, failed_periods
 
 async def process_quarters_with_retry(quarters_to_process, max_concurrent, max_retries=4):
     """Process quarters with retry logic for failed quarters."""
@@ -352,8 +499,10 @@ async def main():
     parser = argparse.ArgumentParser(description='Query Wikidata for people by birth dates')
     parser.add_argument('--year', action='store_true', 
                         help='Query by full years instead of quarters (fewer API calls)')
-    parser.add_argument('--start-year', type=int, default=1050,
-                        help='Start year (default: 1050)')
+    parser.add_argument('--five-year', action='store_true', 
+                        help='Query by five-year periods instead of quarters (fewest API calls)')
+    parser.add_argument('--start-year', type=int, default=-1000,
+                        help='Start year (default: -1000, negative for BC)')
     parser.add_argument('--end-year', type=int, default=2024,
                         help='End year (default: 2024)')
     parser.add_argument('--max-concurrent', type=int, default=10,
@@ -368,11 +517,28 @@ async def main():
     max_concurrent = args.max_concurrent
     csv_file = args.csv_file
     use_year_mode = args.year
+    use_five_year_mode = getattr(args, 'five_year', False)
     
     # Load existing data
     all_people, existing_quarters = load_existing_data(csv_file)
     
-    if use_year_mode:
+    if use_five_year_mode:
+        # Five-year mode: get existing years from quarters data
+        existing_years = set(year for year, quarter in existing_quarters)
+        periods_to_process = get_five_year_periods_to_process(start_year, end_year, existing_years)
+        
+        if not periods_to_process:
+            print("All five-year periods already processed!")
+            return
+        
+        print(f"Five-year mode: Will process {len(periods_to_process)} remaining five-year periods")
+        period_ranges = [f"{p}-{p+4}" for p in periods_to_process]
+        print(f"Covering periods: {', '.join(period_ranges)}")
+        
+        # Process five-year periods with retry logic
+        start_time = time.time()
+        new_people, final_failures = await process_five_year_periods_with_retry(periods_to_process, max_concurrent)
+    elif use_year_mode:
         # Year mode: get existing years from quarters data
         existing_years = set(year for year, quarter in existing_quarters)
         years_to_process = [year for year in range(start_year, end_year + 1) if year not in existing_years]
@@ -418,10 +584,23 @@ async def main():
         save_to_csv(all_people, csv_file)
     
     if final_failures:
-        failure_type = "years" if use_year_mode else "quarters"
-        print(f"\nFinal failed {failure_type} after retries ({len(final_failures)}): {final_failures}")
+        if use_five_year_mode:
+            failure_type = "five-year periods"
+            failure_display = [f"{p}-{p+4}" for p in final_failures]
+        elif use_year_mode:
+            failure_type = "years"
+            failure_display = final_failures
+        else:
+            failure_type = "quarters"
+            failure_display = final_failures
+        print(f"\nFinal failed {failure_type} after retries ({len(final_failures)}): {failure_display}")
     else:
-        success_type = "years" if use_year_mode else "quarters"
+        if use_five_year_mode:
+            success_type = "five-year periods"
+        elif use_year_mode:
+            success_type = "years"
+        else:
+            success_type = "quarters"
         print(f"\nAll {success_type} processed successfully!")
 
 if __name__ == "__main__":
