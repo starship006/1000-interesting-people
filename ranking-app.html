@@ -163,8 +163,8 @@
             <input type="text" 
                    class="formula-input" 
                    id="formulaInput" 
-                   placeholder="e.g., pageLength * 0.3 + googleResults / 1000000 + politicalInfluenceGreatMan * 1000"
-                   value="pageLength * 0.3 + googleResults / 1000000 + politicalInfluenceGreatMan * 1000">
+                   placeholder="e.g., pageLength * 0.3 + politicalInfluenceGreatMan * 1000 + culturalInfluence * 800"
+                   value="Math.max(0.5 * politicalInfluenceGreatMan + 0.5 * politicalInfluenceStructuralist, 0) + culturalInfluence + Math.log10(sitelinks)">
             
             <button class="btn" onclick="calculateRanking()">Calculate Ranking</button>
             <button class="btn" onclick="loadSampleFormulas()" style="background-color: #2196F3;">Load Sample Formulas</button>
@@ -242,7 +242,7 @@
             csvHeaders = rows[0];
             
             // Create camelCase variable names from headers, excluding non-numeric fields and reasoning columns
-            const excludeFields = ['name', 'wikipedia_url', 'wikidata_uri'];
+            const excludeFields = ['name', 'wikipedia_url', 'wikidata_uri', 'cultural_position', 'number_of_books', 'scientific_pioneer', 'cultural_pioneer', 'google_results'];
             availableVariables = csvHeaders
                 .filter(header => !excludeFields.includes(header) && !header.endsWith('_reasoning'))
                 .map(header => toCamelCase(header));
@@ -407,12 +407,13 @@
         function displayResults(rankedPeople, formula, isRankDiffMode = false) {
             const resultsDiv = document.getElementById('results');
             
-            // Calculate sitelinks rankings (Page Rank) - use sitelinks if available
-            const sitelinksVar = availableVariables.includes('sitelinks') ? 'sitelinks' : 
-                                 availableVariables[availableVariables.length - 1]; // fallback to last variable
+            // Calculate Page Rank based on sitelinks (original page rank proxy)
+            const pageRankVar = availableVariables.includes('sitelinks') ? 'sitelinks' : 
+                               availableVariables.includes('pageLength') ? 'pageLength' :
+                               availableVariables[0]; // fallback to first available variable
             
             const pageRankings = [...rankedPeople]
-                .sort((a, b) => (b[sitelinksVar] || 0) - (a[sitelinksVar] || 0))
+                .sort((a, b) => (b[pageRankVar] || 0) - (a[pageRankVar] || 0))
                 .reduce((acc, person, index) => {
                     acc[person.name] = index + 1;
                     return acc;
@@ -500,34 +501,47 @@
             const samples = [];
             
             if (availableVariables.length > 0) {
-                // Basic weighted combination
-                if (availableVariables.includes('pageLength') && availableVariables.includes('googleResults')) {
-                    samples.push(`pageLength * 0.3 + googleResults / 1000000 + ${availableVariables[0]} * 1000`);
+                // Basic weighted combination with multiple influence types
+                if (availableVariables.includes('pageLength')) {
+                    samples.push('pageLength * 0.3 + politicalInfluenceGreatMan * 500 + scientificInfluence * 800 + culturalInfluence * 600');
                 }
                 
                 // Political comparison if both versions exist
                 if (availableVariables.includes('politicalInfluenceGreatMan') && availableVariables.includes('politicalInfluenceStructuralist')) {
-                    samples.push('politicalInfluenceGreatMan * 1000 + politicalInfluenceStructuralist * 500');
-                    samples.push('(politicalInfluenceGreatMan + politicalInfluenceStructuralist) / 2 * 1000');
+                    samples.push('politicalInfluenceGreatMan * 1000 + politicalInfluenceStructuralist * 500 + scientificInfluence * 300');
+                    samples.push('(politicalInfluenceGreatMan + politicalInfluenceStructuralist) / 2 * 1000 + culturalInfluence * 800');
+                    samples.push('Math.max(politicalInfluenceGreatMan, politicalInfluenceStructuralist) * 1200');
                 }
                 
                 // Scientific focus
-                if (availableVariables.includes('scientificPioneer')) {
-                    samples.push(`scientificPioneer * 5000 + ${availableVariables[1] || availableVariables[0]} * 1000`);
+                if (availableVariables.includes('scientificInfluence')) {
+                    samples.push('scientificInfluence * 2000 + culturalInfluence * 800 + pageLength * 0.1');
+                    samples.push('scientificInfluence * 1500 + (politicalInfluenceGreatMan + politicalInfluenceStructuralist) / 2 * 500');
                 }
+                
+                // Cultural focus
+                if (availableVariables.includes('culturalInfluence')) {
+                    samples.push('culturalInfluence * 1800 + scientificInfluence * 600 + pageLength * 0.2');
+                }
+                
+                // Balanced multi-metric approach
+                samples.push('(politicalInfluenceGreatMan + politicalInfluenceStructuralist + scientificInfluence + culturalInfluence) * 250');
+                
+                // Your custom formula
+                samples.push('Math.max(0.5 * politicalInfluenceGreatMan + 0.5 * politicalInfluenceStructuralist, 0) + culturalInfluence + Math.log10(sitelinks)');
                 
                 // Log-based formula
-                if (availableVariables.includes('googleResults')) {
-                    samples.push(`Math.log(googleResults + 1) * 100 + ${availableVariables[0]} * 500`);
+                if (availableVariables.includes('sitelinks')) {
+                    samples.push('Math.log10(sitelinks + 1) * 100 + scientificInfluence * 800 + culturalInfluence * 600');
                 }
                 
-                // Simple first variable
-                samples.push(`${availableVariables[0]} * 1000`);
+                // Pure influence metrics
+                samples.push('politicalInfluenceGreatMan * 800 + scientificInfluence * 1000 + culturalInfluence * 900');
             }
             
             // Fallback if no samples generated
             if (samples.length === 0) {
-                samples.push(`${availableVariables[0] || 'pageLength'} * 1000`);
+                samples.push('politicalInfluenceGreatMan * 1000');
             }
             
             const randomSample = samples[Math.floor(Math.random() * samples.length)];

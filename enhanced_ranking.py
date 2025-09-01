@@ -4,6 +4,7 @@ import time
 import asyncio
 import aiohttp
 import os
+import urllib.parse
 from urllib.parse import quote_plus
 import re
 from inspect_ai import Task, eval, task
@@ -277,7 +278,7 @@ def load_existing_enhanced_people():
 
 def main():
     start_time = time.time()
-    TARGET_COUNT = 50  # Change this number to process more people
+    TARGET_COUNT = 400  # Change this number to process more people
     
     # Load existing enhanced people
     existing_people = load_existing_enhanced_people()
@@ -322,42 +323,68 @@ def main():
     task = score_all_people(samples)
     
     print("Running Inspect AI evaluation...")
+    models = [
+        "openai/gpt-5-nano",
+        "openai/gpt-5-mini",
+        "anthropic/claude-3-5-haiku-latest"
+    ]
+    
     eval_result = eval(
         task,
-        model="openai/gpt-5-nano",  # Use your preferred model
+        model=models,  # Use multiple models
         log_dir="./inspect_logs",
-        max_connections=20  # Built-in concurrency control
+        max_connections=40  # Built-in concurrency control
     )
 
-    if isinstance(eval_result, list):
-        print(f"Got list of {len(eval_result)} results, taking first one")
-        eval_result = eval_result[0]
+    # Handle multiple model results
+    if not isinstance(eval_result, list):
+        eval_result = [eval_result]
     
-
-    print("LLM evaluation completed. Processing results...")
+    print(f"LLM evaluation completed. Processing results from {len(eval_result)} model(s)...")
     
     # Step 4: Process results and combine with web data
     results = []
-    person_scores = {}  # Track scores by person
-    person_reasoning = {}  # Track reasoning by person
+    person_scores = {}  # Track averaged scores by person
+    person_reasoning = {}  # Track reasoning by person (use first model's reasoning)
+    person_all_scores = {}  # Track all scores for averaging
     
-    # Parse LLM results
-    for i, sample_result in enumerate(eval_result.samples):
-        metadata = sample_metadata[i]
-        person_name = metadata['person_name']
-        metric = metadata['metric']
+    # Parse LLM results from all models
+    for model_idx, model_result in enumerate(eval_result):
+        print(f"Processing results from model {model_idx + 1}/{len(eval_result)}")
         
+        for i, sample_result in enumerate(model_result.samples):
+            metadata = sample_metadata[i]
+            person_name = metadata['person_name']
+            metric = metadata['metric']
+            
+            if person_name not in person_all_scores:
+                person_all_scores[person_name] = {}
+                person_reasoning[person_name] = {}
+            
+            if metric not in person_all_scores[person_name]:
+                person_all_scores[person_name][metric] = []
+            
+            # Extract score and reasoning from LLM response
+            response_text = sample_result.output.completion if sample_result.output else ""
+            score, reasoning = extract_score_and_reasoning(response_text, range_0_5=True)
+            
+            person_all_scores[person_name][metric].append(score)
+            
+            # Use reasoning from first model only to avoid overwhelming CSV
+            if model_idx == 0:
+                person_reasoning[person_name][metric] = reasoning
+            
+            print(f"Model {model_idx + 1} - {person_name} - {metric}: {score}")
+    
+    # Calculate averaged scores
+    for person_name, metrics in person_all_scores.items():
         if person_name not in person_scores:
             person_scores[person_name] = {}
-            person_reasoning[person_name] = {}
         
-        # Extract score and reasoning from LLM response
-        response_text = sample_result.output.completion if sample_result.output else ""
-        score, reasoning = extract_score_and_reasoning(response_text, range_0_5=True)
-        
-        person_scores[person_name][metric] = score
-        person_reasoning[person_name][metric] = reasoning
-        print(f"Parsed {person_name} - {metric}: {score}")
+        for metric, scores in metrics.items():
+            avg_score = sum(scores) / len(scores)
+            person_scores[person_name][metric] = round(avg_score, 1)  # Round to 1 decimal place
+            print(f"Averaged {person_name} - {metric}: {scores} -> {avg_score:.1f}")
     
     # Step 5: Combine all data
     print(f"Step 5: Combining all data")
@@ -367,8 +394,19 @@ def main():
             person_data = web_info['person_data']
             reasoning = person_reasoning.get(person_name, {})
             
+            # Fix names that are just Q-IDs by extracting from Wikipedia URL
+            display_name = person_name
+            if person_name.startswith('Q') and person_name[1:].isdigit():
+                wikipedia_url = person_data['wikipedia']
+                if wikipedia_url and '/wiki/' in wikipedia_url:
+                    # Extract name from URL and decode URL encoding
+                    url_name = wikipedia_url.split('/wiki/')[-1]
+                    # Replace underscores with spaces and decode URL encoding
+                    display_name = urllib.parse.unquote(url_name).replace('_', ' ')
+                    print(f"Fixed name: {person_name} -> {display_name}")
+            
             result = {
-                'name': person_name,
+                'name': display_name,
                 'page_length': web_info['page_length'],
                 'google_results': web_info['google_results'],
                 'political_influence_great_man': scores.get('political_influence_great_man', 0),
