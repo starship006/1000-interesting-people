@@ -278,7 +278,7 @@ def load_existing_enhanced_people():
 
 def main():
     start_time = time.time()
-    TARGET_COUNT = 1000  # Change this number to process more people
+    TARGET_COUNT = 1019  # Change this number to process more people | we have 1019 because of some random duplicates, which we also use this script to remove.
     
     # Load existing enhanced people
     existing_people = load_existing_enhanced_people()
