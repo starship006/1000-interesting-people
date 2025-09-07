@@ -1,0 +1,1 @@
+Repository for the code I used to make my list of 1000 interesting people: [starship006.github.io/public/ranking/index.html](https://starship006.github.io/athousandpeople/)
